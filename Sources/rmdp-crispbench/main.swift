@@ -92,7 +92,7 @@ _ = scroll2.detect(luma: UnsafePointer(buf), bytesPerRow: bpr)
 buf.withMemoryRebound(to: UInt8.self, capacity: bpr * H) { p in
     dec2.decodeFrame(enc2.encodeFrame(luma: p, bytesPerRow: bpr, crispTiles: Array(0..<(cols*rows))))
 }
-for f in 1..<n2 {
+for _ in 1..<n2 {
     offset += tileSize                                       // exactly one tile-row/frame
     paintDesktop(scrollOffset: offset, caret: -1)
     let dy = scroll2.detect(luma: UnsafePointer(buf), bytesPerRow: bpr)
@@ -111,6 +111,7 @@ for f in 1..<n2 {
 }
 report("reading-speed scroll (crisp + SCROLL)", bytes: bytes2, n: n2 - 1, cost: cost2)
 print("  lossless every frame: \(exact ? "YES ✓" : "NO ✗")")
+if !exact { print("FAIL: correctness check failed"); exit(1) }   // CI gate
 
 print("\n[note] lossless throughout (also RMDPCrispTests). Luma only; chroma reuses the machinery.")
 print("[finding] fast scroll gets classified as VIDEO by change-rate — so scroll detection must")

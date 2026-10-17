@@ -307,6 +307,7 @@ final class StreamView: NSView {
 
 // MARK: - App
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let opts: Options
     var window: NSWindow?
@@ -384,6 +385,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 let opts = Options.parse()
 let app = NSApplication.shared
 app.setActivationPolicy(.regular)
-let delegate = AppDelegate(opts: opts)
+let delegate = MainActor.assumeIsolated { AppDelegate(opts: opts) }   // top-level code runs on the main thread
 app.delegate = delegate
 app.run()

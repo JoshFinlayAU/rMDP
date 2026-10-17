@@ -46,6 +46,7 @@ for _ in 0..<nEvents {
 }
 print("[correctness]")
 print("  interior of every shifted frame pixel-exact: \(interiorPerfect ? "YES ✓" : "NO ✗")")
+if !interiorPerfect { print("FAIL: correctness check failed"); exit(1) }   // CI gate
 print("  confident after gesture: \(scroller.confident), epoch: \(scroller.epoch)")
 
 // ---- 2. Perceived latency: baseline vs speculative ----

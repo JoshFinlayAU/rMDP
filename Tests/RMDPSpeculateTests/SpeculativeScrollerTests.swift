@@ -18,7 +18,7 @@ private let W = 64, H = 48
 }
 
 @Test func revealedEdgeIsTheUnknownBand() {
-    var scroller = SpeculativeScroller(width: W, height: H)
+    let scroller = SpeculativeScroller(width: W, height: H)
     let doc = ScrollDoc(width: W)
     let s = scroller.shift(doc.viewport(offsetY: 0, height: H), dy: 8)
     #expect(s.unknownRows == (H - 8)..<H)      // scroll down reveals the bottom 8 rows
