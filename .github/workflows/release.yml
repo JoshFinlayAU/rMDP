@@ -1,14 +1,24 @@
-# CD — on a version tag (v0.1.0, …), build release binaries and publish a GitHub Release.
+# CD — on a version tag (v0.1.0, …), build, sign, notarise, and publish a GitHub Release.
 #
 #   git tag -a v0.1.0 -m "MVP" && git push origin v0.1.0
 #
-# Binaries are arm64 (Apple Silicon only — the low-latency VideoToolbox path is the point) and
-# AD-HOC signed. That's enough for TCC to key grants to a stable identity per build, but not for
-# Gatekeeper: a downloaded copy is quarantined. Until Developer ID signing + notarisation is wired
-# in (needs Apple Developer account secrets), users must clear quarantine:
-#   xattr -d com.apple.quarantine rmdp-host rmdp-viewer
-# Every new build is a new ad-hoc identity → macOS will ask for Screen Recording / Accessibility
-# again after upgrading.
+# Binaries are arm64 (Apple Silicon only — the low-latency VideoToolbox path is the point).
+#
+# Signing: Developer ID Application, Serenity Space Pty Ltd (team 4S7BG5A4XV), hardened runtime,
+# secure timestamp, then notarised with an App Store Connect API key. A stable Developer ID
+# signature also means TCC grants (Screen Recording / Accessibility) SURVIVE upgrades — ad-hoc
+# builds lose them every release.
+#
+# Bare Mach-O tools can't have a notarisation ticket stapled (only .app/.pkg/.dmg can), so
+# Gatekeeper checks the ticket online on first launch. That's normal for CLI tools.
+#
+# Secrets live in the `release` GitHub Environment (only jobs that name it can read them):
+#   DEVELOPER_ID_P12_BASE64    base64 of the exported Developer ID Application cert + key (.p12)
+#   DEVELOPER_ID_P12_PASSWORD  the .p12 export password
+#   NOTARY_API_KEY_P8_BASE64   base64 of the App Store Connect API key (.p8)
+#   NOTARY_API_KEY_ID          the key's ID
+#   NOTARY_API_ISSUER_ID       the issuer ID (App Store Connect → Users and Access → Integrations)
+# If they're absent the workflow still publishes, ad-hoc signed and clearly labelled as such.
 name: Release
 
 on:
@@ -23,13 +33,21 @@ on:
 permissions:
   contents: write
 
+env:
+  TEAM_ID: 4S7BG5A4XV
+  SIGNING_IDENTITY: "Developer ID Application: Serenity Space Pty Ltd (4S7BG5A4XV)"
+  # Code-signing identifiers (what TCC and Gatekeeper key on). Changing these resets users' grants.
+  IDENTIFIER_PREFIX: au.com.athenanetworks.rmdp
+
 jobs:
   release:
-    name: Build & publish
+    name: Build, sign, notarise & publish
     runs-on: macos-26
-    timeout-minutes: 30
+    environment: release
+    timeout-minutes: 45
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      HAVE_SIGNING: ${{ secrets.DEVELOPER_ID_P12_BASE64 != '' && secrets.NOTARY_API_KEY_P8_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -45,30 +63,120 @@ jobs:
       - name: Build release
         run: swift build -c release -Xswiftc -warnings-as-errors
 
-      - name: Package
+      - name: Stage binaries
         run: |
           set -euo pipefail
           BIN="$(swift build -c release --show-bin-path)"
           NAME="rmdp-${TAG}-macos26-arm64"
           mkdir -p "dist/$NAME"
+          cp "$BIN/rmdp-host" "$BIN/rmdp-viewer" "dist/$NAME/"
+          echo "NAME=$NAME" >> "$GITHUB_ENV"
+
+      # ---- Developer ID path ------------------------------------------------------------
+
+      - name: Import signing certificate into a throwaway keychain
+        if: env.HAVE_SIGNING == 'true'
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KC_PASS="$(openssl rand -base64 24)"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 3600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$P12_PASSWORD" -f pkcs12 -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PASS" "$KC" > /dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KC"
+          echo "KEYCHAIN=$KC" >> "$GITHUB_ENV"
+
+      - name: Sign (Developer ID, hardened runtime)
+        if: env.HAVE_SIGNING == 'true'
+        run: |
+          set -euo pipefail
           for exe in rmdp-host rmdp-viewer; do
-            cp "$BIN/$exe" "dist/$NAME/"
-            codesign --force --sign - --timestamp=none "dist/$NAME/$exe"
-            codesign --verify --verbose "dist/$NAME/$exe"
+            f="dist/$NAME/$exe"
+            codesign --force --options runtime --timestamp \
+              --identifier "$IDENTIFIER_PREFIX.${exe#rmdp-}" \
+              --keychain "$KEYCHAIN" --sign "$SIGNING_IDENTITY" "$f"
+            codesign --verify --strict --verbose=2 "$f"
+            codesign -dv "$f" 2>&1 | grep -E "Identifier|TeamIdentifier|flags|Timestamp"
           done
-          cat > "dist/$NAME/README.txt" <<TXT
-          rMDP ${TAG} — Remote macOS Display Protocol (requires macOS 26, Apple Silicon)
 
-          Host (machine being controlled):  ./rmdp-host --password <pw>
-            Grant Screen Recording + Accessibility to the app that launches it (e.g. Terminal).
-          Viewer (machine you sit at):      ./rmdp-viewer <host-ip> --password <pw>
+      - name: Notarise
+        if: env.HAVE_SIGNING == 'true'
+        env:
+          P8_BASE64: ${{ secrets.NOTARY_API_KEY_P8_BASE64 }}
+          KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          P8="$RUNNER_TEMP/notary_key.p8"
+          echo "$P8_BASE64" | base64 --decode > "$P8"
+          ditto -c -k --keepParent "dist/$NAME" "$RUNNER_TEMP/notarise.zip"
+          OUT="$(xcrun notarytool submit "$RUNNER_TEMP/notarise.zip" \
+                  --key "$P8" --key-id "$KEY_ID" --issuer "$ISSUER_ID" \
+                  --wait --timeout 30m --output-format json)"
+          echo "$OUT"
+          STATUS="$(echo "$OUT" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
+          if [ "$STATUS" != "Accepted" ]; then
+            ID="$(echo "$OUT" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+            xcrun notarytool log "$ID" --key "$P8" --key-id "$KEY_ID" --issuer "$ISSUER_ID" || true
+            rm -f "$P8"
+            echo "::error::notarisation status: $STATUS"
+            exit 1
+          fi
+          rm -f "$P8"
+          # Gatekeeper's verdict, as a user's Mac would see it (online ticket lookup).
+          for exe in rmdp-host rmdp-viewer; do
+            spctl --assess --type execute --verbose=4 "dist/$NAME/$exe" || true
+          done
 
-          These binaries are ad-hoc signed, not notarised. After downloading run:
-            xattr -d com.apple.quarantine rmdp-host rmdp-viewer
-          TXT
-          sed -i '' 's/^          //' "dist/$NAME/README.txt"
+      - name: Remove keychain
+        if: always() && env.KEYCHAIN != ''
+        run: security delete-keychain "$KEYCHAIN" || true
+
+      # ---- Fallback: ad-hoc ---------------------------------------------------------------
+
+      - name: Sign (ad-hoc fallback — signing secrets not configured)
+        if: env.HAVE_SIGNING != 'true'
+        run: |
+          set -euo pipefail
+          echo "::warning::Signing secrets missing — publishing AD-HOC signed, NOT notarised binaries."
+          for exe in rmdp-host rmdp-viewer; do
+            codesign --force --options runtime --timestamp=none \
+              --identifier "$IDENTIFIER_PREFIX.${exe#rmdp-}" --sign - "dist/$NAME/$exe"
+          done
+
+      # ---- Package & publish --------------------------------------------------------------
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          if [ "$HAVE_SIGNING" = "true" ]; then
+            TRUST="Signed with Developer ID (Serenity Space Pty Ltd) and notarised by Apple."
+            QUARANTINE=""
+          else
+            TRUST="AD-HOC signed, NOT notarised. After downloading run:
+            xattr -d com.apple.quarantine rmdp-host rmdp-viewer"
+            QUARANTINE="(ad-hoc build) "
+          fi
+          {
+            echo "rMDP ${TAG} — Remote macOS Display Protocol (requires macOS 26, Apple Silicon)"
+            echo
+            echo "Host (machine being controlled):  ./rmdp-host --password <pw>"
+            echo "  Grant Screen Recording + Accessibility to the app that launches it (e.g. Terminal)."
+            echo "Viewer (machine you sit at):      ./rmdp-viewer <host-ip> --password <pw>"
+            echo
+            echo "$TRUST"
+          } > "dist/$NAME/README.txt"
           (cd dist && tar -czf "$NAME.tar.gz" "$NAME" && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
           echo "ASSET=dist/$NAME.tar.gz" >> "$GITHUB_ENV"
+          echo "TITLE_PREFIX=$QUARANTINE" >> "$GITHUB_ENV"
 
       - name: Publish GitHub Release
         env:
@@ -79,6 +187,6 @@ jobs:
             gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
           else
             gh release create "$TAG" "$ASSET" "$ASSET.sha256" \
-              --title "rMDP $TAG" --generate-notes \
+              --title "rMDP $TAG ${TITLE_PREFIX}" --generate-notes \
               $([[ "$TAG" == v0.* ]] && echo --prerelease)
           fi
