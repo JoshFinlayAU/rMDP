@@ -1,0 +1,5 @@
+name = "rMDP"
+type = "software"
+description = "Remote macOS Display Protocol"
+created = "2026-08-01"
+remote_control = true  # launch claude with --remote-control <slug>
