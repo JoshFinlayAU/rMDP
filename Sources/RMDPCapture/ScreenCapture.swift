@@ -66,6 +66,9 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             cfg.height = height ?? display.height * scale
             cfg.minimumFrameInterval = CMTime(value: 1, timescale: Int32(fps))
             cfg.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange   // NV12
+            // Pin BT.709 end to end (encoder + renderer assume it) — never trust defaults to match.
+            cfg.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+            cfg.colorSpaceName = CGColorSpace.itur_709
             cfg.queueDepth = 6
             cfg.showsCursor = false   // cursor is sent as metadata (design decision)
 

@@ -13,4 +13,6 @@ Facts specific to this spoke. One line per memory file.
 - [CLASSIFY layer](classify-layer.md) — tile ledger + classifier built & measured; CPU classify viable at 4K (dirty 0.46ms), overturns the GPU-hashing assumption.
 - [CRISP plane](crisp-plane.md) — lossless REF/PAL/RAW + scroll built & measured; text desktop 0.035–0.2 Mbit/s pixel-exact; scroll detection must feed the classifier.
 - [Cursor offset issue](cursor-offset-issue.md) — field report: CONFIRMED pure 2× Retina scale bug (probe 2026-10-17); DisplayGeometry is the fix; same root cause as input-injection accuracy.
-- [Git remote](git-remote.md) — GitHub JoshFinlayAU/mrdp (spelled mrdp); history starts 2026-10-17 initial import.
+- [Git remote](git-remote.md) — GitHub JoshFinlayAU/rMDP (was mrdp); history starts 2026-10-17 initial import.
+- [Transport API](transport-api.md) — macOS 26 NetworkConnection<QUIC> (streams+datagrams); NWConnectionGroup failed; min macOS now 26; Task.sleep ≈8ms.
+- [MVP status](mvp-status.md) — host/viewer built 2026-10-17; loopback e2e p50 17–20ms native res; input/LAN/WAN untested; next = pacer + controller.

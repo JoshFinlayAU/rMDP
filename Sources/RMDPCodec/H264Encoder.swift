@@ -51,6 +51,11 @@ public final class H264Encoder {
         set(kVTCompressionPropertyKey_AverageBitRate, bitrateBps as CFNumber)
         // Prioritise latency over power savings.
         set(kVTCompressionPropertyKey_MaximizePowerEfficiency, kCFBooleanFalse!)
+        // Pin colour explicitly — capture is configured BT.709 to match; mismatched defaults show
+        // up as washed-out/oversaturated output (CLAUDE.md gotcha).
+        set(kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2)
+        set(kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_709_2)
+        set(kVTCompressionPropertyKey_YCbCrMatrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2)
 
         VTCompressionSessionPrepareToEncodeFrames(session)
     }
@@ -59,18 +64,29 @@ public final class H264Encoder {
         VTCompressionSessionInvalidate(session)
     }
 
+    /// Change the target bitrate on the live session (no teardown — CLAUDE.md: reconfigure via
+    /// properties). Returns false if VideoToolbox refused it.
+    @discardableResult
+    public func setBitrate(_ bps: Int) -> Bool {
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: bps as CFNumber) == noErr
+    }
+
     /// Encode one frame. `completion` fires on VideoToolbox's queue with the
-    /// compressed sample buffer (or nil on failure).
+    /// compressed sample buffer (or nil on failure). `forceKeyframe` makes this frame an IDR —
+    /// used for viewer join and loss recovery.
     public func encode(_ pixelBuffer: CVPixelBuffer,
                        pts: CMTime,
+                       forceKeyframe: Bool = false,
                        completion: @escaping (CMSampleBuffer?) -> Void) throws {
         var infoFlags = VTEncodeInfoFlags()
+        let props: CFDictionary? = forceKeyframe
+            ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue!] as CFDictionary : nil
         let status = VTCompressionSessionEncodeFrame(
             session,
             imageBuffer: pixelBuffer,
             presentationTimeStamp: pts,
             duration: .invalid,
-            frameProperties: nil,
+            frameProperties: props,
             infoFlagsOut: &infoFlags,
             outputHandler: { status, _, sampleBuffer in
                 completion(status == noErr ? sampleBuffer : nil)

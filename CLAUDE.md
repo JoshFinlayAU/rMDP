@@ -18,7 +18,7 @@ The headline feature is **dynamic scaling**: bitrate, resolution, framerate, and
 
 Nothing is locked in until it's in the repo — check what's actually there before assuming. The expected shape:
 
-- **Language:** Swift (macOS 14+) for anything touching Apple frameworks; Swift Package Manager for layout (`Package.swift`, `Sources/`, `Tests/`). C/C++ only where a codec or transport library forces it, bridged via a small Swift wrapper.
+- **Language:** Swift (**macOS 26+** — raised from 14 for the `NetworkConnection<QUIC>` API, see `memory/transport-api.md`) for anything touching Apple frameworks; Swift Package Manager for layout (`Package.swift`, `Sources/`, `Tests/`). C/C++ only where a codec or transport library forces it, bridged via a small Swift wrapper.
 - **Capture:** `ScreenCaptureKit` (`SCStream`) — the only sanctioned path on modern macOS. Gives dirty-rect metadata, per-display/per-window capture, and cursor handling. Avoid the deprecated `CGDisplayStream`.
 - **Encode/decode:** `VideoToolbox` hardware H.264/HEVC on both ends (`VTCompressionSession` / `VTDecompressionSession`). Apple Silicon media engine does the heavy lifting; keep sessions long-lived and reconfigure via properties rather than tearing down.
 - **Render:** Metal (`CAMetalLayer`) with `CVPixelBuffer`/`IOSurface` handed straight to the GPU — no CPU-side pixel copies in the hot path.
@@ -36,13 +36,21 @@ Confirm these against the repo before quoting them back; update this section whe
 ```bash
 swift build                      # debug build
 swift build -c release           # release — always benchmark against this, never debug
-swift test                       # unit tests
-swift test --filter ProtocolTests
+swift test                       # unit tests (49 as of the MVP)
+swift test --filter RMDPProtocolTests
 
-# Run the two halves locally (separate terminals)
-swift run rmdp-host --listen 0.0.0.0:7443 --display 1
-swift run rmdp-viewer --connect 127.0.0.1:7443
+# Run the two halves (separate terminals / machines). Requires macOS 26 on both ends.
+swift run -c release rmdp-host [--port 7443] [--password PW] [--fps 60] [--bitrate-mbit 20] [--scale native|points] [--view-only]
+swift run -c release rmdp-viewer <host>[:port] [--password PW]     # or $RMDP_PASSWORD, or prompt
+
+# Loopback on ONE machine: always pass --view-only to the host, or injected input fights your own cursor.
+RMDP_PASSWORD=x swift run -c release rmdp-host --view-only
+RMDP_PASSWORD=x swift run -c release rmdp-viewer 127.0.0.1
 ```
+
+Host state lives in `~/Library/Application Support/rMDP/` (`host-identity.p12` + `.pass`, 0600);
+viewer pins in `known_hosts.json` there (SSH accept-new semantics). The viewer window title is the
+live telemetry (fps, Mbit/s, end-to-end latency p50/p95, RTT, frames lost).
 
 If an Xcode project appears instead of / alongside SPM:
 

@@ -635,6 +635,12 @@ each step produces a number:
      env has 0 displays; run `rmdp-capturetest` at the console for capture-delivery latency.
      Transport RTT already characterised (spike 001). Remaining to fully close: wire the real
      SCStream capture in on a console + display scanout via light sensor.
+   - ✅ **MVP built 2026-10-17** — `rmdp-host` / `rmdp-viewer` (`RMDPProtocol`, `RMDPTransport`,
+     `RMDPInput`, `LayerRenderer`). Real SCStream → H.264 → QUIC datagrams → decode → CAMetalLayer,
+     input over a reliable QUIC stream → CGEvent. **Loopback, native 3024×1964, M4 Pro: e2e
+     (host scanout → viewer GPU done) p50 17–20 ms, p95 22–29 ms, 0 frames lost; static desktop
+     0.2 Mbit/s.** Capture-delivery measured ≈ −2 ms vs scanout (frames arrive before the panel
+     shows them). Not yet measured: two machines, impairment, input latency.
 4. **Tile ledger + crisp plane, lossless only, no video plane.** Measure text quality and
    bandwidth on a static desktop.
 5. **Both planes + classifier.** Measure the handoff. Expect this to be where the bugs are.

@@ -1,9 +1,11 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "rMDP",
-    platforms: [.macOS(.v14)],
+    // macOS 26: the NetworkConnection<QUIC> API (streams + datagrams on one connection) is
+    // 26-only; the older NWConnectionGroup path could not do both. See memory/transport-api.md.
+    platforms: [.macOS(.v26)],
     products: [
         .library(name: "RMDPMeasure", targets: ["RMDPMeasure"]),
         .library(name: "RMDPCodec", targets: ["RMDPCodec"]),
@@ -13,6 +15,9 @@ let package = Package(
         .library(name: "RMDPTiles", targets: ["RMDPTiles"]),
         .library(name: "RMDPCrisp", targets: ["RMDPCrisp"]),
         .library(name: "RMDPGeometry", targets: ["RMDPGeometry"]),
+        .library(name: "RMDPProtocol", targets: ["RMDPProtocol"]),
+        .library(name: "RMDPTransport", targets: ["RMDPTransport"]),
+        .library(name: "RMDPInput", targets: ["RMDPInput"]),
         .executable(name: "rmdp-latencybench", targets: ["rmdp-latencybench"]),
         .executable(name: "rmdp-pipeline", targets: ["rmdp-pipeline"]),
         .executable(name: "rmdp-capturetest", targets: ["rmdp-capturetest"]),
@@ -20,6 +25,8 @@ let package = Package(
         .executable(name: "rmdp-classifybench", targets: ["rmdp-classifybench"]),
         .executable(name: "rmdp-crispbench", targets: ["rmdp-crispbench"]),
         .executable(name: "rmdp-cursorprobe", targets: ["rmdp-cursorprobe"]),
+        .executable(name: "rmdp-host", targets: ["rmdp-host"]),
+        .executable(name: "rmdp-viewer", targets: ["rmdp-viewer"]),
     ],
     targets: [
         // Pure measurement core — no framework deps, fully unit-testable.
@@ -45,6 +52,17 @@ let package = Package(
 
         // Coordinate transform between capture pixels and screen points (§2.8 / cursor+input).
         .target(name: "RMDPGeometry"),
+
+        // Wire format: control/input messages, video fragmentation, reassembly + loss policy.
+        // Pure — no framework deps — so every framing path is unit-tested (§3).
+        .target(name: "RMDPProtocol"),
+
+        // QUIC transport (macOS 26 NetworkConnection): host listener, viewer client, TLS
+        // identity + trust-on-first-use pinning, password auth.
+        .target(name: "RMDPTransport", dependencies: ["RMDPProtocol"]),
+
+        // Host-side CGEvent input injection through DisplayGeometry (§2.8).
+        .target(name: "RMDPInput", dependencies: ["RMDPGeometry"]),
 
         // Codec-floor latency harness (synthetic frames, no TCC).
         .executableTarget(
@@ -88,11 +106,23 @@ let package = Package(
             dependencies: ["RMDPGeometry"]
         ),
 
+        // The two halves of the MVP remote desktop.
+        .executableTarget(
+            name: "rmdp-host",
+            dependencies: ["RMDPMeasure", "RMDPCapture", "RMDPCodec", "RMDPProtocol", "RMDPTransport", "RMDPInput"]
+        ),
+        .executableTarget(
+            name: "rmdp-viewer",
+            dependencies: ["RMDPMeasure", "RMDPCodec", "RMDPRender", "RMDPProtocol", "RMDPTransport", "RMDPGeometry"]
+        ),
+
         .testTarget(name: "RMDPMeasureTests", dependencies: ["RMDPMeasure"]),
         .testTarget(name: "RMDPSpeculateTests", dependencies: ["RMDPSpeculate"]),
         .testTarget(name: "RMDPTilesTests", dependencies: ["RMDPTiles"]),
         .testTarget(name: "RMDPCrispTests", dependencies: ["RMDPCrisp"]),
         .testTarget(name: "RMDPGeometryTests", dependencies: ["RMDPGeometry"]),
+        .testTarget(name: "RMDPProtocolTests", dependencies: ["RMDPProtocol"]),
+        .testTarget(name: "RMDPCodecTests", dependencies: ["RMDPCodec"]),
     ],
     // Systems/C-interop code (VideoToolbox, CoreVideo). Swift 5 language mode keeps
     // strict-concurrency Sendable checks on non-Sendable CF types from drowning out

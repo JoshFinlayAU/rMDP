@@ -24,9 +24,19 @@ public final class H264Decoder {
     }
 
     private func ensureSession(for sampleBuffer: CMSampleBuffer) throws {
-        guard session == nil else { return }
         guard let fmt = CMSampleBufferGetFormatDescription(sampleBuffer) else {
             throw DecoderError.noFormatDescription
+        }
+        // A new IDR may carry new SPS/PPS (resolution or profile change): rebuild only if the
+        // existing session can't take the new format.
+        if let session, let formatDesc {
+            if CMFormatDescriptionEqual(formatDesc, otherFormatDescription: fmt) { return }
+            if VTDecompressionSessionCanAcceptFormatDescription(session, formatDescription: fmt) {
+                self.formatDesc = fmt
+                return
+            }
+            VTDecompressionSessionInvalidate(session)
+            self.session = nil
         }
         formatDesc = fmt
 
@@ -44,6 +54,7 @@ public final class H264Decoder {
             outputCallback: nil,          // per-frame block API
             decompressionSessionOut: &s)
         guard status == noErr, let s else { throw DecoderError.sessionCreateFailed(status) }
+        VTSessionSetProperty(s, key: kVTDecompressionPropertyKey_RealTime, value: kCFBooleanTrue)
         session = s
     }
 

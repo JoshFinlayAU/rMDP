@@ -124,7 +124,7 @@ public final class MetalRenderer {
         return (luma, width, height, width)
     }
 
-    private static let shaderSource = """
+    static let shaderSource = """
     #include <metal_stdlib>
     using namespace metal;
     struct VOut { float4 pos [[position]]; float2 uv; };

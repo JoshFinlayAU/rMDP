@@ -47,6 +47,12 @@ public final class LatencyRecorder: @unchecked Sendable {
         total += 1
     }
 
+    /// Discard all samples (for per-interval stats). Same single-producer rule as `summarize`.
+    public func reset() {
+        writeIndex = 0
+        total = 0
+    }
+
     /// Number of samples recorded (may exceed capacity; only the last `capacity` are kept).
     public var recordedCount: Int { total }
 
