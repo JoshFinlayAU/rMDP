@@ -11,9 +11,17 @@ release builds with `-warnings-as-errors`, `swift test --parallel`, smoke-run of
 (`rmdp-scrollpoc` / `rmdp-crispbench` exit 1 on correctness failure; `rmdp-classifybench` just runs).
 
 `.github/workflows/release.yml`: on `v*` tag (or manual dispatch with a tag) → same test gate →
-ad-hoc `codesign -s -` arm64 `rmdp-host` + `rmdp-viewer` → tarball + sha256 → GitHub Release
-(`v0.*` = prerelease). **Not Developer-ID signed / notarised** — needs Apple Developer secrets;
-until then users must `xattr -d com.apple.quarantine`, and every build re-prompts TCC.
+arm64 `rmdp-host` + `rmdp-viewer` → tarball + sha256 → GitHub Release (`v0.*` = prerelease).
+**Signing (decided 2026-10-17 by Josh):** Developer ID Application **Serenity Space Pty Ltd, team
+4S7BG5A4XV** (the only Developer ID cert in his keychain), hardened runtime + secure timestamp,
+identifiers `au.com.athenanetworks.rmdp.{host,viewer}`; notarised via **App Store Connect API key**
+(`notarytool --wait`). Secrets live in the GitHub Environment **`release`** (allowed refs: `v*` tags,
+`main`): DEVELOPER_ID_P12_BASE64, DEVELOPER_ID_P12_PASSWORD, NOTARY_API_KEY_P8_BASE64,
+NOTARY_API_KEY_ID, NOTARY_API_ISSUER_ID. Missing secrets ⇒ falls back to ad-hoc with a warning.
+Bare Mach-O can't be stapled ⇒ Gatekeeper checks the ticket online at first launch. Both binaries
+verified to run under hardened runtime (ad-hoc + `--options runtime`, loopback) — the first-run
+`/usr/bin/openssl` identity generation path was NOT re-exercised signed. Stable Developer ID
+signature ⇒ TCC grants survive upgrades (ad-hoc lost them every build).
 
 **CI can't cover** (no console session / TCC on runners): ScreenCaptureKit capture, CGEvent input,
 end-to-end feel. The real-codec test skips if the runner VM lacks a low-latency H.264 encoder
