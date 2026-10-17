@@ -1,0 +1,84 @@
+# CD — on a version tag (v0.1.0, …), build release binaries and publish a GitHub Release.
+#
+#   git tag -a v0.1.0 -m "MVP" && git push origin v0.1.0
+#
+# Binaries are arm64 (Apple Silicon only — the low-latency VideoToolbox path is the point) and
+# AD-HOC signed. That's enough for TCC to key grants to a stable identity per build, but not for
+# Gatekeeper: a downloaded copy is quarantined. Until Developer ID signing + notarisation is wired
+# in (needs Apple Developer account secrets), users must clear quarantine:
+#   xattr -d com.apple.quarantine rmdp-host rmdp-viewer
+# Every new build is a new ad-hoc identity → macOS will ask for Screen Recording / Accessibility
+# again after upgrading.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build and publish
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & publish
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Toolchain
+        run: swift --version
+
+      # Same gate as CI — never publish something that doesn't pass tests.
+      - name: Test
+        run: swift test --parallel
+
+      - name: Build release
+        run: swift build -c release -Xswiftc -warnings-as-errors
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          BIN="$(swift build -c release --show-bin-path)"
+          NAME="rmdp-${TAG}-macos26-arm64"
+          mkdir -p "dist/$NAME"
+          for exe in rmdp-host rmdp-viewer; do
+            cp "$BIN/$exe" "dist/$NAME/"
+            codesign --force --sign - --timestamp=none "dist/$NAME/$exe"
+            codesign --verify --verbose "dist/$NAME/$exe"
+          done
+          cat > "dist/$NAME/README.txt" <<TXT
+          rMDP ${TAG} — Remote macOS Display Protocol (requires macOS 26, Apple Silicon)
+
+          Host (machine being controlled):  ./rmdp-host --password <pw>
+            Grant Screen Recording + Accessibility to the app that launches it (e.g. Terminal).
+          Viewer (machine you sit at):      ./rmdp-viewer <host-ip> --password <pw>
+
+          These binaries are ad-hoc signed, not notarised. After downloading run:
+            xattr -d com.apple.quarantine rmdp-host rmdp-viewer
+          TXT
+          sed -i '' 's/^          //' "dist/$NAME/README.txt"
+          (cd dist && tar -czf "$NAME.tar.gz" "$NAME" && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+          echo "ASSET=dist/$NAME.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+          else
+            gh release create "$TAG" "$ASSET" "$ASSET.sha256" \
+              --title "rMDP $TAG" --generate-notes \
+              $([[ "$TAG" == v0.* ]] && echo --prerelease)
+          fi

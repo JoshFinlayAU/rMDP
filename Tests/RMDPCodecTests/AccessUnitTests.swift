@@ -4,9 +4,18 @@ import CoreMedia
 import CoreVideo
 @testable import RMDPCodec
 
+/// The low-latency H.264 encoder needs Apple Silicon's media engine. CI runners are VMs that may
+/// not expose it, so skip there rather than fail for an environment reason. Set
+/// RMDP_REQUIRE_HW_CODEC=1 to turn a missing encoder into a failure instead.
+let hardwareEncoderAvailable: Bool = {
+    if ProcessInfo.processInfo.environment["RMDP_REQUIRE_HW_CODEC"] == "1" { return true }
+    return (try? H264Encoder(width: 64, height: 64)) != nil
+}()
+
 /// Encode → H264AccessUnit (wire form) → rebuild sample buffer → decode. Proves the
 /// packetisation the host/viewer rely on, on real VideoToolbox hardware (works headless).
-@Test func accessUnitRoundTripsThroughRealCodec() throws {
+@Test(.enabled(if: hardwareEncoderAvailable, "no low-latency H.264 encoder (VM without media engine?)"))
+func accessUnitRoundTripsThroughRealCodec() throws {
     let w = 640, h = 360
     let pool = try PixelBufferPool(width: w, height: h, minBuffers: 4)
     let enc = try H264Encoder(width: w, height: h, bitrateBps: 2_000_000)

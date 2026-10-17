@@ -1,0 +1,65 @@
+# CI — build and test on every push to main and every PR.
+#
+# Runs on GitHub's macOS 26 arm64 image: the package needs macOS 26 (NetworkConnection<QUIC>)
+# and swift-tools 6.2, which ship with the image's default Xcode 26.
+#
+# What CI can't cover (needs a logged-in console with TCC grants, which runners don't have):
+# real ScreenCaptureKit capture, CGEvent input injection, and the end-to-end host↔viewer feel.
+# Those stay manual — see CLAUDE.md "Before claiming a change works".
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: Build & test (macOS 26, arm64)
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-${{ hashFiles('Sources/**', 'Tests/**') }}
+          restore-keys: |
+            spm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.swift', 'Package.resolved') }}-
+
+      # Warnings are errors: the frame path is where "harmless" warnings (unused results,
+      # Sendable captures) turn into real bugs.
+      - name: Build (debug + tests)
+        run: swift build --build-tests -Xswiftc -warnings-as-errors
+
+      - name: Test
+        run: swift test --skip-build --parallel
+
+      - name: Build (release)
+        run: swift build -c release -Xswiftc -warnings-as-errors
+
+      # Benchmarks are measurement tools, not pass/fail tests — but they must keep running.
+      # These are the headless ones (no TCC); they also self-verify (recon == truth, oracle checks).
+      - name: Smoke-run headless benches
+        run: |
+          set -o pipefail
+          BIN="$(swift build -c release --show-bin-path)"
+          "$BIN/rmdp-scrollpoc"      | tail -n 15
+          "$BIN/rmdp-classifybench"  | tail -n 15
+          "$BIN/rmdp-crispbench"     | tail -n 15
