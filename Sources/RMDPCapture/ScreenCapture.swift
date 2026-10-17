@@ -19,12 +19,21 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         public let status: SCFrameStatus
         public let contentRect: CGRect
         public let dirtyRects: [CGRect]
-        public let displayTimeNanos: UInt64   // capture presentation time
+        /// The frame's scheduled scanout time, in `MonotonicClock` ns. SCK usually
+        /// delivers ~1ms BEFORE this, so `arrival - displayTimeNanos` is signed.
+        public let displayTimeNanos: UInt64
     }
 
     private var stream: SCStream?
     private let onFrame: (Frame) -> Void
     private let queue = DispatchQueue(label: "rmdp.capture", qos: .userInteractive)
+
+    /// mach ticks → ns (SCStreamFrameInfo.displayTime is in mach_absolute_time ticks).
+    private static let timebase: mach_timebase_info_data_t = {
+        var tb = mach_timebase_info_data_t()
+        mach_timebase_info(&tb)
+        return tb
+    }()
 
     public enum CaptureError: Error {
         case noDisplay
@@ -36,8 +45,13 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     /// Start capturing the main display at up to `fps`.
+    ///
+    /// Default size is the display's POINT size (a 2× downscale on Retina). Pass
+    /// `nativeResolution: true` for backing pixels — what crisp text needs. Explicit
+    /// `width`/`height` override both.
     public func start(fps: Int = 60,
                       width: Int? = nil, height: Int? = nil,
+                      nativeResolution: Bool = false,
                       completion: @escaping (Error?) -> Void) {
         SCShareableContent.getWithCompletionHandler { [weak self] content, error in
             guard let self else { return }
@@ -47,8 +61,9 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             }
             let filter = SCContentFilter(display: display, excludingWindows: [])
             let cfg = SCStreamConfiguration()
-            cfg.width = width ?? display.width
-            cfg.height = height ?? display.height
+            let scale = nativeResolution ? Int(filter.pointPixelScale) : 1
+            cfg.width = width ?? display.width * scale
+            cfg.height = height ?? display.height * scale
             cfg.minimumFrameInterval = CMTime(value: 1, timescale: Int32(fps))
             cfg.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange   // NV12
             cfg.queueDepth = 6
@@ -88,11 +103,19 @@ public final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         let dirty = (attachments[.dirtyRects] as? [[String: Any]])?.compactMap {
             CGRect(dictionaryRepresentation: $0 as CFDictionary)
         } ?? []
-        let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        let ptsNanos = pts.isValid ? UInt64(max(0, pts.seconds) * 1e9) : MonotonicClock.nowNanos()
+        // Prefer the compositor's displayTime (mach ticks); fall back to PTS (host clock,
+        // same mach domain). Both share MonotonicClock's timebase.
+        let displayNanos: UInt64
+        if let ticks = attachments[.displayTime] as? UInt64 {
+            let tb = Self.timebase
+            displayNanos = ticks &* UInt64(tb.numer) / UInt64(tb.denom)
+        } else {
+            let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            displayNanos = pts.isValid ? UInt64(max(0, pts.seconds) * 1e9) : MonotonicClock.nowNanos()
+        }
 
         onFrame(Frame(pixelBuffer: pb, status: status, contentRect: contentRect,
-                      dirtyRects: dirty, displayTimeNanos: ptsNanos))
+                      dirtyRects: dirty, displayTimeNanos: displayNanos))
     }
 
     public func stream(_ stream: SCStream, didStopWithError error: Error) {

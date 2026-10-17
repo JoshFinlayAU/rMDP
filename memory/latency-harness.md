@@ -59,3 +59,14 @@ dirty coverage 8.6%. Inter-arrival p50 17.5ms (≈60Hz) but p95 158 / p99 540ms 
 measures inter-arrival only — it does NOT measure capture-delivery latency, so the motion-to-photon
 capture term is still unknown. Fix: diff `SCStreamFrameInfo.displayTime` (mach time) against
 arrival time. Also: stream is configured at POINT size (1512×982), i.e. 2× downscaled, not native.
+
+**Capture-delivery MEASURED 2026-10-17 (`feat/capture-latency`, M4 Pro MacBook, display active):**
+`SCStreamFrameInfo.displayTime` is mach_absolute_time ticks (same domain as MonotonicClock — verified)
+and is the frame's **scheduled scanout**, not a past event. SCK delivers frames **~2ms BEFORE
+scanout**: callback − displayTime p50 −1.9ms, p95 +0.6, p99 +1.4 (point size 1512×982); native
+3024×1964 is the same (p50 −2.2, p99 +1.0) — **native resolution costs nothing on the capture side**.
+Steady 58 fps, gaps p99 ~21ms when the screen is busy. → The capture term of motion-to-photon is
+≈0 relative to scanout; what it does NOT see is app-draw→composite (upstream of SCK), which only a
+light-sensor/watermark-on-screen rig can measure. `RMDP_NATIVE=1` enables backing-pixel capture.
+Also: capture now works from Claude sessions when the Mac has an active display (earlier 0-display
+result was the session context at the time, not a permanent limit).
