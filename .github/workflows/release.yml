@@ -17,7 +17,7 @@
 #   DEVELOPER_ID_P12_PASSWORD  the .p12 export password
 #   NOTARY_API_KEY_P8_BASE64   base64 of the App Store Connect API key (.p8)
 #   NOTARY_API_KEY_ID          the key's ID
-#   NOTARY_API_ISSUER_ID       the issuer ID (App Store Connect → Users and Access → Integrations)
+#   NOTARY_API_ISSUER_ID       issuer UUID shown above the Team Keys list (empty for an Individual key)
 # If they're absent the workflow still publishes, ad-hoc signed and clearly labelled as such.
 name: Release
 
@@ -115,17 +115,32 @@ jobs:
           ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
         run: |
           set -euo pipefail
+          # Pasted secrets often carry stray whitespace/newlines — strip them.
+          KEY_ID="$(printf '%s' "$KEY_ID" | tr -d '[:space:]')"
+          ISSUER_ID="$(printf '%s' "$ISSUER_ID" | tr -d '[:space:]')"
+          # Describe the SHAPE of each credential (never the value) so a bad paste is obvious.
+          uuid_re='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+          echo "key id:    ${#KEY_ID} chars (expect 10 alphanumeric)"
+          if [ -n "$ISSUER_ID" ]; then
+            if [[ "$ISSUER_ID" =~ $uuid_re ]]; then echo "issuer id: valid UUID"
+            else echo "::error::NOTARY_API_ISSUER_ID is ${#ISSUER_ID} chars and not a UUID (expect xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx, shown above the Team Keys list)"; exit 1; fi
+          else
+            echo "issuer id: empty → treating as an Individual API key (no --issuer)"
+          fi
+          AUTH=(--key "$RUNNER_TEMP/notary_key.p8" --key-id "$KEY_ID")
+          [ -n "$ISSUER_ID" ] && AUTH+=(--issuer "$ISSUER_ID")
+
           P8="$RUNNER_TEMP/notary_key.p8"
           echo "$P8_BASE64" | base64 --decode > "$P8"
+          grep -q "BEGIN PRIVATE KEY" "$P8" || { echo "::error::NOTARY_API_KEY_P8_BASE64 doesn't decode to a .p8 private key"; rm -f "$P8"; exit 1; }
           ditto -c -k --keepParent "dist/$NAME" "$RUNNER_TEMP/notarise.zip"
-          OUT="$(xcrun notarytool submit "$RUNNER_TEMP/notarise.zip" \
-                  --key "$P8" --key-id "$KEY_ID" --issuer "$ISSUER_ID" \
+          OUT="$(xcrun notarytool submit "$RUNNER_TEMP/notarise.zip" "${AUTH[@]}" \
                   --wait --timeout 30m --output-format json)"
           echo "$OUT"
           STATUS="$(echo "$OUT" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')"
           if [ "$STATUS" != "Accepted" ]; then
             ID="$(echo "$OUT" | /usr/bin/python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
-            xcrun notarytool log "$ID" --key "$P8" --key-id "$KEY_ID" --issuer "$ISSUER_ID" || true
+            xcrun notarytool log "$ID" "${AUTH[@]}" || true
             rm -f "$P8"
             echo "::error::notarisation status: $STATUS"
             exit 1
