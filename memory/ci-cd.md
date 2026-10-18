@@ -32,3 +32,11 @@ headless session — host encodes 0 frames and the viewer shows black at 0 fps w
 Before blaming code for 0 fps, run `rmdp-capturetest`. UX gap: host should tell the viewer why.
 
 Related: [[mvp-status]], [[git-remote]].
+
+**First notarisation attempts (v0.1.0, 2026-10-18) — gotchas hit, in order:**
+1. `gh secret set NAME VALUE` does NOT take a positional value (stored garbage, 18 chars) — use
+   `--body` or pipe stdin. The Notarise step now prints each credential's SHAPE (never value).
+2. Issuer ID must be the UUID above the Team Keys list (Individual keys: delete the secret).
+3. HTTP 403 "required agreement is missing or has expired" — Apple blocks notarytool until the
+   Account Holder accepts the latest Program License Agreement at developer.apple.com/account.
+Re-run without re-tagging: `gh workflow run Release --ref main -f tag=v0.1.0`.
