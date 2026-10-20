@@ -11,3 +11,6 @@ DerivedData/
 *.cer
 *.mobileprovision
 *.provisionprofile
+
+# Local test logs
+*.log
