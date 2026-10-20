@@ -100,15 +100,48 @@ final class HostPipeline: HostSessionDelegate, @unchecked Sendable {
     private let framesSent = Atomic<Int>(0)
     private let bytesSent = Atomic<Int>(0)
     private let keyframesSent = Atomic<Int>(0)
+    private let encodeErrors = Atomic<Int>(0)
+
+    /// Hardware H.264 low-latency encoder limits. Measured 2026-10-20 (M4 Pro): 4096-wide encodes,
+    /// 5120×1440 creates a session then fails EVERY frame (callback -19354, no sample) — the
+    /// ultrawide grey-screen bug. Larger displays are downscaled to fit (SCK scales for free; input
+    /// mapping already handles any stream/display ratio via DisplayGeometry).
+    static let maxEncodeWidth = 4096
+    static let maxEncodeHeight = 2304
+
+    /// The display's capture size, before clamping to encoder limits.
+    let sourceW: Int, sourceH: Int
 
     init(opts: Options) {
         self.opts = opts
         let main = CGMainDisplayID()
         displayBounds = CGDisplayBounds(main)
         if opts.native, let mode = CGDisplayCopyDisplayMode(main) {
-            streamW = mode.pixelWidth; streamH = mode.pixelHeight
+            sourceW = mode.pixelWidth; sourceH = mode.pixelHeight
         } else {
-            streamW = Int(displayBounds.width); streamH = Int(displayBounds.height)
+            sourceW = Int(displayBounds.width); sourceH = Int(displayBounds.height)
+        }
+        (streamW, streamH) = Self.fitToEncoder(width: sourceW, height: sourceH)
+    }
+
+    /// Scale (w, h) down — aspect preserved, even dimensions (4:2:0) — to the encoder's limits.
+    static func fitToEncoder(width w: Int, height h: Int) -> (Int, Int) {
+        let scale = min(1.0, Double(maxEncodeWidth) / Double(w), Double(maxEncodeHeight) / Double(h))
+        return (Int(Double(w) * scale) & ~1, Int(Double(h) * scale) & ~1)
+    }
+
+    /// Encode one blank frame at the stream size before accepting viewers. VideoToolbox can create
+    /// a session it then can't encode with, and per-frame failures are otherwise silent.
+    func selfTest() -> String? {
+        do {
+            let enc = try H264Encoder(width: streamW, height: streamH, bitrateBps: Int(opts.bitrateMbit * 1_000_000))
+            let pb = try PixelBufferPool(width: streamW, height: streamH, minBuffers: 1).makeBuffer()
+            var ok = false
+            try enc.encode(pb, pts: CMTime(value: 1, timescale: 60), forceKeyframe: true) { ok = $0 != nil }
+            enc.finish()
+            return ok ? nil : "encoder produced no output at \(streamW)×\(streamH)"
+        } catch {
+            return "encoder setup failed at \(streamW)×\(streamH): \(error)"
         }
     }
 
@@ -214,7 +247,13 @@ final class HostPipeline: HostSessionDelegate, @unchecked Sendable {
         }
         do {
             try encoder.encode(pb, pts: pts, forceKeyframe: force) { [weak self] sb in
-                guard let self, let sb, let au = H264AccessUnit(sampleBuffer: sb) else { return }
+                guard let self else { return }
+                guard let sb, let au = H264AccessUnit(sampleBuffer: sb) else {
+                    // Never silent: counted here, reported once a second off the frame path.
+                    encodeErrors.add(1, ordering: .relaxed)
+                    needKeyframe.store(true, ordering: .relaxed)
+                    return
+                }
                 let frame = EncodedVideoFrame(frameID: nextFrameID, isKeyframe: au.isKeyframe,
                                               captureNanos: captureNanos,
                                               parameterSets: au.parameterSets, sampleData: au.avccData)
@@ -228,6 +267,7 @@ final class HostPipeline: HostSessionDelegate, @unchecked Sendable {
                 if au.isKeyframe { keyframesSent.add(1, ordering: .relaxed) }
             }
         } catch {
+            encodeErrors.add(1, ordering: .relaxed)
             needKeyframe.store(true, ordering: .relaxed)
         }
     }
@@ -236,8 +276,10 @@ final class HostPipeline: HostSessionDelegate, @unchecked Sendable {
         let f = framesSent.exchange(0, ordering: .relaxed)
         let b = bytesSent.exchange(0, ordering: .relaxed)
         let k = keyframesSent.exchange(0, ordering: .relaxed)
+        let e = encodeErrors.exchange(0, ordering: .relaxed)
         guard session != nil else { return }
-        print(String(format: "  host:   %.1f Mbit/s  %d fps encoded  %d IDR", Double(b) * 8 / 1e6, f, k))
+        print(String(format: "  host:   %.1f Mbit/s  %d fps encoded  %d IDR", Double(b) * 8 / 1e6, f, k)
+              + (e > 0 ? "  ⚠ \(e) ENCODE ERRORS" : ""))
     }
 }
 
@@ -261,7 +303,12 @@ do { identity = try HostIdentity.loadOrCreate() } catch { print("✗ \(error)");
 let pipeline = HostPipeline(opts: opts)
 print("rMDP host — protocol v\(RMDPWire.protocolVersion)")
 print("  listening   udp/\(opts.port) (QUIC)")
-print("  stream      \(pipeline.streamW)×\(pipeline.streamH) @ up to \(opts.fps) fps, \(opts.bitrateMbit) Mbit/s H.264")
+print("  stream      \(pipeline.streamW)×\(pipeline.streamH) @ up to \(opts.fps) fps, \(opts.bitrateMbit) Mbit/s H.264"
+      + (pipeline.streamW != pipeline.sourceW ? "  (display \(pipeline.sourceW)×\(pipeline.sourceH), downscaled to fit the H.264 encoder)" : ""))
+if let problem = pipeline.selfTest() {
+    print("✗ \(problem) — refusing to start (viewers would get a grey screen)")
+    exit(1)
+}
 print("  identity    \(HostIdentity.shortFingerprint(identity.fingerprint))  (viewers pin this on first connect)")
 if opts.viewOnly { print("  input       IGNORED (--view-only)") }
 print("  password    \(opts.password == nil ? password + "  (generated — pass --password or $RMDP_PASSWORD to fix it)" : "(set)")")

@@ -3,3 +3,11 @@
 *.xcodeproj/xcuserdata/
 DerivedData/
 .DS_Store
+
+# Signing material — must never be committed (public repo). Keep these outside the repo.
+*.p8
+*.p12
+*.pfx
+*.cer
+*.mobileprovision
+*.provisionprofile
