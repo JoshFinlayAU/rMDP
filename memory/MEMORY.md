@@ -17,3 +17,4 @@ Facts specific to this spoke. One line per memory file.
 - [Transport API](transport-api.md) — macOS 26 NetworkConnection<QUIC> (streams+datagrams); NWConnectionGroup failed; min macOS now 26; Task.sleep ≈8ms.
 - [MVP status](mvp-status.md) — host/viewer built 2026-10-17; loopback e2e p50 17–20ms native res; input/LAN/WAN untested; next = pacer + controller.
 - [CI/CD](ci-cd.md) — GitHub Actions on macos-26 (warnings-as-errors, tests, bench smoke) + v* tag release (Developer ID Serenity Space + notarised, secrets in `release` env); locked screen ⇒ SCK noDisplay ⇒ silent 0 fps.
+- [Field test findings](field-test-findings.md) — two-Mac test from 2026-10-20: managed Mac can't host (need reverse-connect); viewer lacks connect timeout.

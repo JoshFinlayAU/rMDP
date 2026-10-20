@@ -8,6 +8,7 @@ public enum ViewerError: Error, CustomStringConvertible {
     case hostKeyMismatch(host: String, expected: String, got: String)
     case unexpectedMessage(String)
     case closed
+    case timeout(host: String, seconds: Int)
 
     public var description: String {
         switch self {
@@ -22,6 +23,13 @@ public enum ViewerError: Error, CustomStringConvertible {
             """
         case .unexpectedMessage(let m): return "protocol error: unexpected \(m)"
         case .closed: return "connection closed"
+        case let .timeout(host, seconds):
+            return """
+            no response from \(host) after \(seconds)s.
+              • is rmdp-host running there?
+              • UDP \(host.split(separator: ":").last ?? "7443") must reach it — a firewall (incl. MDM-managed
+                work Macs), Wi-Fi client isolation, or a UDP-blocking VPN/Zero-Trust overlay will drop it silently.
+            """
         }
     }
 }
@@ -62,8 +70,28 @@ public final class ViewerClient: @unchecked Sendable {
         (inputMessages, inputQueue) = AsyncStream.makeStream(of: ControlMessage.self)
     }
 
-    /// Handshake. Returns the host's stream parameters.
+    /// How long to wait for the QUIC handshake + welcome before giving up. Unanswered UDP never
+    /// errors on its own — without a deadline a blocked host just hangs the viewer forever
+    /// (field test 2026-10-20, managed work Mac).
+    public static let connectTimeoutSeconds = 8
+
+    /// Handshake with a deadline. Returns the host's stream parameters.
     public func connect(password: String, viewerName: String) async throws -> ControlMessage.Welcome {
+        try await withThrowingTaskGroup(of: ControlMessage.Welcome?.self) { group in
+            group.addTask { try await self.handshake(password: password, viewerName: viewerName) }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(Self.connectTimeoutSeconds) * 1_000_000_000)
+                return nil
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next(), let welcome = first else {
+                throw ViewerError.timeout(host: hostKey, seconds: Self.connectTimeoutSeconds)
+            }
+            return welcome
+        }
+    }
+
+    private func handshake(password: String, viewerName: String) async throws -> ControlMessage.Welcome {
         let raw: QUIC.Stream<QUICStream>
         do {
             raw = try await conn.openStream()

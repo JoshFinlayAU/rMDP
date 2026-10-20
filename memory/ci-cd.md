@@ -39,4 +39,11 @@ Related: [[mvp-status]], [[git-remote]].
 2. Issuer ID must be the UUID above the Team Keys list (Individual keys: delete the secret).
 3. HTTP 403 "required agreement is missing or has expired" — Apple blocks notarytool until the
    Account Holder accepts the latest Program License Agreement at developer.apple.com/account.
+   Accepting the PLA on developer.apple.com was NOT enough: App Store Connect → Business still showed
+   the banner and "Free Apps Agreement — Active (New Agreement Available)". Accepting the new Free
+   Apps Agreement there is what unblocked it (2026-10-20).
 Re-run without re-tagging: `gh workflow run Release --ref main -f tag=v0.1.0`.
+
+**v0.1.0 shipped 2026-10-20** — notarisation Accepted; verified a downloaded + quarantined copy of
+both binaries launches with no Gatekeeper prompt. `spctl --type execute` prints "rejected (does
+not seem to be an app)" for bare CLI tools — expected, not a failure.
